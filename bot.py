@@ -2,14 +2,14 @@
 Telegram Bot for counting invitations in chat
 Telegram çatda çagyryşlary hasaplaýan bot
 Author: Your Name
-Version: 1.0
+Version: 2.0 - Fixed permissions
 """
 
 import logging
 import sqlite3
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ChatMemberHandler, ContextTypes, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, ChatMemberHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 from telegram.constants import ParseMode
 
 # ==================== CONFIGURATION ====================
@@ -114,18 +114,28 @@ class Database:
 # Initialize database
 db = Database()
 
+# ==================== PERMISSION CHECK ====================
+
+async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Check if user is admin in the chat"""
+    try:
+        chat_member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
+        return chat_member.status in ['administrator', 'creator']
+    except:
+        return False
+
 # ==================== COMMAND HANDLERS ====================
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command"""
     await update.message.reply_text(
         "🇹🇲 **Salam! Men çaga goşulanlary hasaplaýan bot**\n\n"
-        "📊 **Buýruklar:**\n"
-        "/top - iň köp çagyranlar\n"
-        "/men - meniň statistikam\n"
-        "/komek - kömek\n\n"
-        "⚡️ Men çata kim näçe adam goşandygyny awtomatiki hasaplaýaryn!\n\n"
-        "🇷🇺 **Привет! Я бот для подсчёта приглашений в чат**",
+        "📊 **Hemmeler üçin buýruklar:**\n"
+        "/top - iň köp çagyranlary görkez\n"
+        "/men - meniň statistikam\n\n"
+        "👑 **Adminler üçin:**\n"
+        "/reset - statistika sifrlemek\n\n"
+        "⚡️ Men çata kim näçe adam goşandygyny awtomatiki hasaplaýaryn!",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -134,10 +144,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🔍 **Men nähili işleýärin?**\n"
         "Men her bir täze agzany yzarlaýaryn we ony kim goşandygyny ýazga alýaryn.\n\n"
-        "📌 **Buýruklar:**\n"
+        "📌 **Hemmeler üçin buýruklar:**\n"
         "/top - iň köp çagyranlaryň ilkinji 10-sy\n"
-        "/men - sen näçe adam çagyrdyň\n"
-        "/reset - statistika sifrlemek (diňe adminler)\n\n"
+        "/men - sen näçe adam çagyrdyň\n\n"
+        "👑 **Adminler üçin buýruklar:**\n"
+        "/reset - statistika sifrlemek\n\n"
         "⚠️ **Bellik:**\n"
         "• Men diňe goşulandan soňky çagyryşlary hasaplaýaryn\n"
         "• Bot çatda admin bolmaly\n"
@@ -146,113 +157,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show top inviters"""
-    top_inviters = db.get_top_inviters(10)
+    """Show top inviters - доступно всем"""
+    logger.info(f"Top command used by user {update.effective_user.id}")
     
-    if not top_inviters:
-        await update.message.reply_text("📊 Entek statistika ýok. Ilkinji bol!")
-        return
-    
-    message = "🏆 **IŇ KÖP ÇAGYRANLAR** 🏆\n\n"
-    
-    for i, (user_id, username, first_name, last_name, count) in enumerate(top_inviters, 1):
-        name = first_name or ""
-        if last_name:
-            name += f" {last_name}"
-        if username:
-            name += f" (@{username})"
-        
-        if i == 1:
-            medal = "🥇"
-        elif i == 2:
-            medal = "🥈"
-        elif i == 3:
-            medal = "🥉"
-        else:
-            medal = "👤"
-        
-        message += f"{medal} **{i}.** {name}: {count} adam\n"
-    
-    keyboard = [[InlineKeyboardButton("🔄 Täzele", callback_data="refresh_top")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-
-async def mystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show user's personal stats"""
-    user = update.effective_user
-    count = db.get_user_stats(user.id)
-    
-    message = (
-        f"📊 **Seniň statistikanyň**\n\n"
-        f"👤 {user.first_name}"
-    )
-    if user.username:
-        message += f" (@{user.username})"
-    
-    message += f"\n\n✅ Çagyran adamlaryň: **{count}**"
-    
-    await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
-
-async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Reset statistics (admins only)"""
-    chat_member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
-    
-    if chat_member.status in ['administrator', 'creator']:
-        db.reset_stats()
-        await update.message.reply_text("✅ Statistika üstünlikli sifrlendi!")
-    else:
-        await update.message.reply_text("❌ Bu buýruk diňe adminler üçin.")
-
-# ==================== EVENT HANDLERS ====================
-
-async def track_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Track new members and count invitations"""
-    
-    if not update.chat_member:
-        return
-    
-    old_status = update.chat_member.old_chat_member.status
-    new_status = update.chat_member.new_chat_member.status
-    
-    # Only count when someone becomes a member
-    if new_status == 'member' and old_status != 'member':
-        inviter = update.chat_member.from_user
-        new_member = update.chat_member.new_chat_member.user
-        
-        # Don't count bots
-        if new_member.is_bot:
-            return
-        
-        inviter_data = {
-            'username': inviter.username,
-            'first_name': inviter.first_name,
-            'last_name': inviter.last_name
-        }
-        
-        success = db.add_invite(inviter.id, new_member.id, inviter_data)
-        
-        if success:
-            invite_count = db.get_user_stats(inviter.id)
-            # Optional notification
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"🎉 {new_member.first_name} çata goşuldy! Ony {inviter.first_name} çagyrdy (indi {invite_count} adam)",
-                parse_mode=ParseMode.HTML
-            )
-
-# ==================== BUTTON HANDLER ====================
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle button presses"""
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "refresh_top":
+    try:
         top_inviters = db.get_top_inviters(10)
         
         if not top_inviters:
-            await query.edit_message_text("📊 Entek statistika ýok.")
+            await update.message.reply_text("📊 Entek statistika ýok. Ilkinji bol!")
             return
         
         message = "🏆 **IŇ KÖP ÇAGYRANLAR** 🏆\n\n"
@@ -275,14 +187,157 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             message += f"{medal} **{i}.** {name}: {count} adam\n"
         
+        # Добавляем кнопку обновления
         keyboard = [[InlineKeyboardButton("🔄 Täzele", callback_data="refresh_top")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(
+        await update.message.reply_text(
             message, 
-            parse_mode=ParseMode.MARKDOWN,
+            parse_mode=ParseMode.MARKDOWN, 
             reply_markup=reply_markup
         )
+    except Exception as e:
+        logger.error(f"Error in top command: {e}")
+        await update.message.reply_text("❌ Bir näsazlyk ýüze çykdy. Täzeden synanyşyň.")
+
+async def mystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show user's personal stats - доступно всем"""
+    logger.info(f"Men command used by user {update.effective_user.id}")
+    
+    try:
+        user = update.effective_user
+        count = db.get_user_stats(user.id)
+        
+        message = (
+            f"📊 **Seniň statistikanyň**\n\n"
+            f"👤 {user.first_name}"
+        )
+        if user.username:
+            message += f" (@{user.username})"
+        
+        message += f"\n\n✅ Çagyran adamlaryň: **{count}**"
+        
+        await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"Error in men command: {e}")
+        await update.message.reply_text("❌ Bir näsazlyk ýüze çykdy. Täzeden synanyşyň.")
+
+async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reset statistics - только для админов"""
+    logger.info(f"Reset command used by user {update.effective_user.id}")
+    
+    try:
+        # Проверяем, админ ли пользователь
+        if not await is_admin(update, context):
+            await update.message.reply_text("❌ Bu buýruk diňe adminler üçin!")
+            return
+        
+        # Сбрасываем статистику
+        db.reset_stats()
+        await update.message.reply_text("✅ Statistika üstünlikli sifrlendi!")
+        
+        # Отправляем уведомление в чат
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"👑 Admin {update.effective_user.first_name} statistika sifrledi!"
+        )
+    except Exception as e:
+        logger.error(f"Error in reset command: {e}")
+        await update.message.reply_text("❌ Bir näsazlyk ýüze çykdy. Täzeden synanyşyň.")
+
+# ==================== EVENT HANDLERS ====================
+
+async def track_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Track new members and count invitations"""
+    
+    if not update.chat_member:
+        return
+    
+    try:
+        old_status = update.chat_member.old_chat_member.status
+        new_status = update.chat_member.new_chat_member.status
+        
+        # Only count when someone becomes a member
+        if new_status == 'member' and old_status != 'member':
+            inviter = update.chat_member.from_user
+            new_member = update.chat_member.new_chat_member.user
+            
+            # Don't count bots
+            if new_member.is_bot:
+                return
+            
+            inviter_data = {
+                'username': inviter.username,
+                'first_name': inviter.first_name,
+                'last_name': inviter.last_name
+            }
+            
+            success = db.add_invite(inviter.id, new_member.id, inviter_data)
+            
+            if success:
+                invite_count = db.get_user_stats(inviter.id)
+                # Optional notification
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=f"🎉 {new_member.first_name} çata goşuldy! Ony {inviter.first_name} çagyrdy (indi {invite_count} adam)",
+                    parse_mode=ParseMode.HTML
+                )
+    except Exception as e:
+        logger.error(f"Error tracking new member: {e}")
+
+# ==================== BUTTON HANDLER ====================
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle button presses"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "refresh_top":
+        try:
+            top_inviters = db.get_top_inviters(10)
+            
+            if not top_inviters:
+                await query.edit_message_text("📊 Entek statistika ýok.")
+                return
+            
+            message = "🏆 **IŇ KÖP ÇAGYRANLAR** 🏆\n\n"
+            
+            for i, (user_id, username, first_name, last_name, count) in enumerate(top_inviters, 1):
+                name = first_name or ""
+                if last_name:
+                    name += f" {last_name}"
+                if username:
+                    name += f" (@{username})"
+                
+                if i == 1:
+                    medal = "🥇"
+                elif i == 2:
+                    medal = "🥈"
+                elif i == 3:
+                    medal = "🥉"
+                else:
+                    medal = "👤"
+                
+                message += f"{medal} **{i}.** {name}: {count} adam\n"
+            
+            keyboard = [[InlineKeyboardButton("🔄 Täzele", callback_data="refresh_top")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                message, 
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            logger.error(f"Error refreshing top: {e}")
+            await query.edit_message_text("❌ Bir näsazlyk ýüze çykdy.")
+
+# ==================== MESSAGE HANDLER (для отладки) ====================
+
+async def debug_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отлавливает все сообщения для отладки"""
+    logger.info(f"Message received: {update.message.text} from {update.effective_user.id}")
+    # Не отвечаем, просто логируем
 
 # ==================== MAIN ====================
 
@@ -304,8 +359,12 @@ def main():
     # Add button handler
     app.add_handler(CallbackQueryHandler(button_handler))
     
+    # Debug handler - ловит все сообщения (поможет понять, видит ли бот команды)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, debug_messages))
+    
     # Start bot
     print("🤖 Bot işe başlady... (Bot started...)")
+    print("📝 Logging all messages for debugging...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
